@@ -1,0 +1,147 @@
+name: MacOS + upstream GitHub xz
+
+# This is not working, so only allow manual run
+# issue with not being able to override the system path location of the lzma library
+# It always finds the system version of liblzma for some reason
+on:
+  workflow_dispatch:
+  # push:
+  # pull_request:
+  # schedule:
+  #     - cron: '02 02 2 1-12 *'    # Run monthly
+
+jobs:
+  build:
+
+    runs-on: macos-latest
+
+    strategy:
+      matrix:
+        perl:
+          - '5.42'
+          # - '5.40'
+        lzma-version:
+          - v5.8.1
+          - v5.8.0
+          - v5.6.3
+          - v5.6.3
+          - v5.6.2
+          # 5.6.0 & 5.6.1 don't exist anymore
+          - v5.4.7
+          - v5.4.6
+          - v5.4.5
+          - v5.4.4
+          - v5.4.3
+          - v5.4.2
+          # - v5.4.1
+          - v5.4.0
+          - v5.2.13
+          - v5.2.12
+          - v5.2.11
+          - v5.2.10
+          # - v5.0.7
+          - master
+
+    env:
+      lzma-source:      ${{ github.workspace }}/upstream-lzma-source
+      lzma-install:     ${{ github.workspace }}/upstream-lzma-install
+      LIBLZMA_LIB:      ${{ github.workspace }}/upstream-lzma-install/lib
+      LIBLZMA_INCLUDE:  ${{ github.workspace }}/upstream-lzma-install/include
+      LZMA_VERSION:     ${{ matrix.lzma-version }}
+
+      DYLD_LIBRARY_PATH: ${{ github.workspace }}/upstream-lzma-install/lib
+
+    defaults:
+      run:
+        working-directory: repo
+
+    name: Perl ${{ matrix.perl }} with lzma ${{matrix.lzma-version}}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        path: repo
+
+    - name: Cancel if Scheduled Job and not running the 'master' branch
+      if: github.event_name == 'schedule' &&  matrix.lzma-version != 'master'
+      run: |
+        gh run cancel ${{ github.run_id }}
+        gh run watch  ${{ github.run_id }}
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Make Paths
+      run: |
+        mkdir -p ${{ env.lzma-source }}
+        mkdir -p ${{ env.lzma-install }}
+        mkdir -p ${{ github.workspace }}/repo
+
+    - name: Cache lzma ${{matrix.lzma-version}}
+      id: cache-lzma
+      uses: actions/cache@v4
+      with:
+        # NOTE: path doesn't expand variables!
+        path: upstream-lzma-install
+        key: ${{ runner.os }}-lzma-${{ matrix.lzma-version }}
+
+    - name: Checkout upstream lzma ${{matrix.lzma-version}}
+      if: steps.cache-lzma.outputs.cache-hit != 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: tukaani-project/xz
+        ref: ${{ matrix.lzma-version }}
+        path: ${{ env.lzma-source }}
+
+    #   # Install Autotools on Mac
+    # - name: Install Dependencies
+    #   run: brew install autoconf automake libtool po4a doxygen
+
+    # # Configure-based build
+    # - name: Build lzma ${{matrix.lzma-version}}
+    #   if: steps.cache-lzma.outputs.cache-hit != 'true'
+    #   run: |
+    #     # Run autogen.sh script if not already run
+    #     if [ ! -f configure ]
+    #     then
+    #       ./autogen.sh
+    #     fi
+    #     ./configure --prefix ${{ env.lzma-install }} --libdir ${{ env.lzma-install }}/lib
+    #     make
+    #     make check
+    #     make install
+    #   working-directory: ${{ env.lzma-source }}
+
+    # CMake-based build
+    - name: Build lzma ${{matrix.lzma-version}}
+      if: steps.cache-lzma.outputs.cache-hit != 'true'
+      run: |
+        mkdir ${HOME}/build-xz
+        cd ${HOME}/build-xz
+        cmake ${{ env.lzma-source }}/CMakeLists.txt -B . --install-prefix ${{ env.lzma-install }} -DBUILD_SHARED_LIBS=ON
+        cmake --build .
+        cmake --install .
+
+    - name: Show installed lzma files
+      run: |
+        pwd
+        find .
+      working-directory: ${{ env.lzma-install }}
+
+    - name: Setup perl
+      uses: shogo82148/actions-setup-perl@v1
+      with:
+        perl-version: ${{ matrix.perl }}
+
+    - name: Perl version
+      run: perl -V
+
+    - name: Install dependencies
+      # pod::markdown now available in 5.6
+      if: matrix.perl != '5.6'
+      run: cpanm --quiet --installdeps --notest .
+
+    - name: Build
+      run: |
+        perl Makefile.PL && make
+
+    - name: Test
+      run: make test
